@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../../models/registration.dart';
 import '../../models/server_configuration.dart';
 import '../../models/template.dart';
 import '../client.dart';
@@ -10,21 +11,22 @@ export 'rest_exception.dart';
 
 class RestClient implements Client {
   final Uri _baseUri;
-  final Map<String, String> _headers;
+  late final Map<String, String> _headers;
 
-  RestClient(this._baseUri, String bearerToken)
-      : _headers = {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $bearerToken'
-        };
+  RestClient(this._baseUri, [String? bearerToken]) {
+    Map<String, String> headers = {'Content-Type': 'application/json'};
+    if (bearerToken != null && bearerToken.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $bearerToken';
+    }
+    _headers = headers;
+  }
 
   // TODO GET /api/
 
   // /api/config
   @override
   Future<ServerConfiguration> getConfig() async {
-    final uri = _buildUri('/api/config');
-    final response = await http.get(uri, headers: _headers);
+    final response = await _get('/api/config', headers: _headers);
     // if the request was not successfully (status code 2XX), throw RestException
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw _buildException(response.statusCode);
@@ -49,9 +51,9 @@ class RestClient implements Client {
   @override
   Future<void> callService(String domain, String service,
       [Map<String, dynamic>? serviceData]) async {
-    final uri = _buildUri('/api/services/$domain/$service');
     final body = serviceData != null ? jsonEncode(serviceData) : '{}';
-    final response = await http.post(uri, headers: _headers, body: body);
+    final response = await _post('/api/services/$domain/$service',
+        headers: _headers, body: body);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw _buildException(response.statusCode);
     }
@@ -60,9 +62,9 @@ class RestClient implements Client {
   @override
   Future<void> fireEvent(
       String eventType, Map<String, dynamic>? eventData) async {
-    final uri = _buildUri('/api/events/$eventType');
     final body = eventData != null ? jsonEncode(eventData) : null;
-    final response = await http.post(uri, headers: _headers, body: body);
+    final response =
+        await _post('/api/events/$eventType', headers: _headers, body: body);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw _buildException(response.statusCode);
     }
@@ -70,9 +72,9 @@ class RestClient implements Client {
 
   @override
   Future<String> renderTemplate(Template template) async {
-    final uri = _buildUri('/api/template');
     final body = jsonEncode(template.toMap());
-    final response = await http.post(uri, headers: _headers, body: body);
+    final response =
+        await _post('/api/template', headers: _headers, body: body);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw _buildException(response.statusCode);
     }
@@ -93,12 +95,48 @@ class RestClient implements Client {
   // TODO POST /api/config/core/check_config
   // TODO POST /api/intent/handle
 
-  Uri _buildUri(String path) {
+  Future<RegistrationResponse> registerDevice(
+      {required String deviceId,
+      required String appId,
+      required String appName,
+      required String appVersion,
+      required String deviceName,
+      required String manufacturer,
+      required String model,
+      required String osName,
+      required String osVersion,
+      required bool supportsEncryption,
+      Map<String, dynamic>? appData}) async {
+    Map<String, dynamic> bodyRaw = {
+      'device_id': deviceId,
+      'app_id': appId,
+      'app_name': appName,
+      'app_version': appVersion,
+      'device_name': deviceName,
+      'manufacturer': manufacturer,
+      'model': model,
+      'os_name': osName,
+      'os_version': osVersion,
+      'supports_encryption': supportsEncryption,
+    };
+    if (appData != null && appData.isNotEmpty) {
+      bodyRaw['app_data'] = appData;
+    }
+
+    // perform request
+    final body = jsonEncode(bodyRaw);
+    final response = await _post('/api/mobile_app/registrations',
+        headers: _headers, body: body);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _buildException(response.statusCode);
+    }
+    final responseJson = jsonDecode(response.body);
+    return RegistrationResponse.fromMap(responseJson);
+  }
+
+  Uri _buildUri(Uri base, String path) {
     return Uri(
-        scheme: _baseUri.scheme,
-        host: _baseUri.host,
-        port: _baseUri.port,
-        path: path);
+        scheme: base.scheme, host: base.host, port: base.port, path: path);
   }
 
   RestException _buildException(int statusCode) {
@@ -114,5 +152,61 @@ class RestClient implements Client {
       default:
         return RestException(statusCode, '');
     }
+  }
+
+  Future<http.Response> _get(String path, {Map<String, String>? headers}) {
+    return http.get(_buildUri(_baseUri, path), headers: _headers);
+  }
+
+  Future<http.Response> _post(String path,
+      {Map<String, String>? headers, Object? body}) {
+    return http.post(_buildUri(_baseUri, path), headers: _headers, body: body);
+  }
+}
+
+class FallbackRestClient extends RestClient {
+  Uri? _cloudUri;
+
+  FallbackRestClient(Uri? cloudUri, Uri customUri, [String? bearerToken])
+      : _cloudUri = cloudUri,
+        super(customUri, bearerToken);
+
+  @override
+  Future<http.Response> _get(String path,
+      {Map<String, String>? headers}) async {
+    final uris = _buildUriList();
+    for (var uri in uris) {
+      final apiUri = _buildUri(uri, path);
+      try {
+        return await http.get(apiUri, headers: headers);
+      } catch (e) {
+        print('Error getting from $apiUri: $e');
+      }
+    }
+    throw ServerUnreachableException(_baseUri);
+  }
+
+  @override
+  Future<http.Response> _post(String path,
+      {Map<String, String>? headers, Object? body}) async {
+    final uris = _buildUriList();
+    for (var uri in uris) {
+      final apiUri = _buildUri(uri, path);
+      try {
+        return await http.post(apiUri, headers: headers, body: body);
+      } catch (e) {
+        print('Error posting to $apiUri: $e');
+      }
+    }
+    throw ServerUnreachableException(_baseUri);
+  }
+
+  List<Uri> _buildUriList() {
+    List<Uri> uris = [];
+    if (_cloudUri != null) {
+      uris.add(_cloudUri!);
+    }
+    uris.add(_baseUri);
+    return uris;
   }
 }

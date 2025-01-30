@@ -1,9 +1,21 @@
 import '../models/server_configuration.dart';
 import '../models/template.dart';
 
+export 'native_app/native_app_client.dart';
 export 'rest/rest_client.dart';
 export 'services/services.dart';
 export 'webhook/webhook_client.dart';
+
+class ServerUnreachableException implements Exception {
+  final Uri uri;
+
+  const ServerUnreachableException(this.uri);
+
+  @override
+  String toString() {
+    return uri.toString();
+  }
+}
 
 abstract class Client {
   /// Returns the current configuration.
@@ -22,5 +34,3 @@ abstract class Client {
   /// Renders multiple Home Assistant templates.
   Future<Map<String, String>> renderTemplates(Map<String, Template> templates);
 }
-
-abstract class NativeAppIntegration {}

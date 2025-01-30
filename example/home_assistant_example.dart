@@ -3,16 +3,21 @@ import 'package:home_assistant/home_assistant.dart';
 void main() {
   // initialize client
   final baseUri = Uri.parse('http://homeassistant.local:8123');
-  final bearerToken = 'token';
-  final RestClient client = RestClient(baseUri, bearerToken);
+  final app = AppInformation("id", "name", "version");
+  final device = DeviceInformation(
+      "id", "name", "manufacturer", "model", "osName", "osVersion");
+  final NativeAppClient client = NativeAppClient(baseUri, app, device);
 
   performActions(client);
 }
 
-Future<void> performActions(RestClient client) async {
+Future<void> performActions(NativeAppClient client) async {
   // show a welcome message
   final welcomeMessage = await renderWelcomeMessage(client);
   print(welcomeMessage);
+
+  // register device
+  await client.registerDevice();
 
   // toggle lights
   await toggleCeilingLight(client);

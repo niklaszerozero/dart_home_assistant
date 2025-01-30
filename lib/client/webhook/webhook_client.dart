@@ -1,6 +1,4 @@
 import 'dart:convert';
-import 'dart:ffi';
-import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:sodium/sodium.dart';
@@ -11,7 +9,7 @@ import '../client.dart';
 
 export 'webhook_exception.dart';
 
-class WebhookClient implements Client, NativeAppIntegration {
+class WebhookClient implements Client {
   static Uri constructUri(Uri baseUri, String webhookId) => Uri(
       scheme: baseUri.scheme,
       host: baseUri.host,
@@ -20,15 +18,16 @@ class WebhookClient implements Client, NativeAppIntegration {
 
   final Uri _baseUri;
 
-  SecureKey? _key;
-  Sodium? _sodium;
+  final SecureKey? _key;
+  final Sodium? _sodium;
 
-  WebhookClient(this._baseUri);
+  const WebhookClient(this._baseUri)
+      : this._key = null,
+        this._sodium = null;
 
-  WebhookClient.encrypted(
-      this._baseUri, String secret, String pathToLibsodium) {
-    _initializeEncryption(secret, pathToLibsodium);
-  }
+  const WebhookClient.encrypted(this._baseUri, SecureKey key, Sodium sodium)
+      : this._key = key,
+        this._sodium = sodium;
 
   Future<void> updateDeviceLocation({
     String? locationName,
@@ -118,27 +117,12 @@ class WebhookClient implements Client, NativeAppIntegration {
 
   // TODO Push Notifications
 
-  Future<void> _initializeEncryption(String secret, String path) async {
-    // initialize sodium
-    _sodium = await SodiumInit.init(() => DynamicLibrary.open(path));
-
-    // build key from secret
-    _key = _generateKey(secret);
-  }
-
-  SecureKey _generateKey(String secret) {
-    if (_sodium == null) {
-      throw Exception('sodium is not initialized');
-    }
-    final keyBytes = base64.decode(secret);
-    if (keyBytes.length != _sodium!.crypto.secretBox.keyBytes) {
-      throw Exception(
-          'Invalid key length: Expected ${_sodium!.crypto.secretBox.keyBytes} bytes, got ${keyBytes.length}');
-    }
-    return _sodium!.secureCopy(Uint8List.fromList(keyBytes));
-  }
-
   Future<String> _sendMessage(String type, [Map<String, dynamic>? data]) async {
+    return _sendMessageTo(_baseUri, type, data);
+  }
+
+  Future<String> _sendMessageTo(Uri uri, String type,
+      [Map<String, dynamic>? data]) async {
     // build data
     Map<String, dynamic> bodyRaw = {'type': type};
     if (data != null && data.isNotEmpty) {
@@ -148,10 +132,10 @@ class WebhookClient implements Client, NativeAppIntegration {
     // encrypt data if necessary
     if (_key != null && _sodium != null) {
       final nonce =
-          _sodium!.randombytes.buf(_sodium!.crypto.secretBox.nonceBytes);
+          _sodium.randombytes.buf(_sodium.crypto.secretBox.nonceBytes);
       final message = utf8.encode(jsonEncode(bodyRaw));
-      final encryptedData = _sodium!.crypto.secretBox
-          .easy(message: message, nonce: nonce, key: _key!);
+      final encryptedData = _sodium.crypto.secretBox
+          .easy(message: message, nonce: nonce, key: _key);
       bodyRaw = {
         'type': 'encrypted',
         'encrypted': true,
@@ -162,10 +146,55 @@ class WebhookClient implements Client, NativeAppIntegration {
     // perform request
     final headers = {'Content-Type': 'application/json'};
     final body = jsonEncode(bodyRaw);
-    final response = await http.post(_baseUri, headers: headers, body: body);
+    final response = await http.post(uri, headers: headers, body: body);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw WebhookException(response.statusCode);
     }
     return response.body;
+  }
+}
+
+class FallbackWebhookClient extends WebhookClient {
+  final Uri? _cloudhookUri;
+  final Uri? _cloudUri;
+
+  const FallbackWebhookClient(Uri? cloudhookUri, Uri? cloudUri, Uri customUri)
+      : this._cloudhookUri = cloudhookUri,
+        this._cloudUri = cloudUri,
+        super(customUri);
+
+  const FallbackWebhookClient.encrypted(
+    Uri? cloudhookUri,
+    Uri? cloudUri,
+    Uri customUri,
+    SecureKey key,
+    Sodium sodium,
+  )   : this._cloudhookUri = cloudhookUri,
+        this._cloudUri = cloudUri,
+        super.encrypted(customUri, key, sodium);
+
+  @override
+  Future<String> _sendMessage(String type, [Map<String, dynamic>? data]) async {
+    List<Uri> uris = _buildUriList();
+    for (var uri in uris) {
+      try {
+        return await _sendMessageTo(uri, type, data);
+      } catch (e) {
+        print('Error fetching from $uri: $e');
+      }
+    }
+    throw ServerUnreachableException(_baseUri);
+  }
+
+  List<Uri> _buildUriList() {
+    List<Uri> uris = [];
+    if (_cloudhookUri != null) {
+      uris.add(_cloudhookUri);
+    }
+    if (_cloudUri != null) {
+      uris.add(_cloudUri);
+    }
+    uris.add(_baseUri);
+    return uris;
   }
 }
