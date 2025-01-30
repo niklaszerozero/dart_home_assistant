@@ -1,0 +1,18 @@
+name: home_assistant
+version: 0.0.1
+description: A Dart library for connecting to Home Assistant via REST or Webhook APIs, with support for Native App Integration.
+repository:
+
+topics:
+  - http
+  - rest
+  - webhook
+  - home-assistant
+  - home-automation
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  http: ^1.3.0
+  sodium: ^3.4.4
